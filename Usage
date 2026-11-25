@@ -1,0 +1,8 @@
+Create json data
+python treejson.py Path
+
+Move tree.html and tree_data.json in same folder
+
+Open tree.html
+python -m http.server 8000
+http://localhost:8000/tree.html
