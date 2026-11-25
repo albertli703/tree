@@ -1,0 +1,667 @@
+Usage
+python treejson.py Path
+tree.html and tree_data.json in same folder
+python -m http.server 8000
+http://localhost:8000/tree.html
+
+import os
+import re
+import json
+import sys
+
+
+def natural_key(text):
+    return [
+        int(c) if c.isdigit() else c.lower()
+        for c in re.split(r'(\d+)', text)
+    ]
+
+
+def long_path(path):
+    path = os.path.abspath(path)
+
+    if os.name == "nt":
+        if not path.startswith("\\\\?\\"):
+            path = "\\\\?\\" + path
+
+    return path
+
+
+def scan_folder(path):
+
+    node = {
+        "name": os.path.basename(path) or path,
+        "type": "folder",
+        "children": []
+    }
+
+    total_files = 0
+    total_folders = 0
+    total_size = 0
+
+    try:
+        entries = list(os.scandir(long_path(path)))
+    except Exception:
+        node["error"] = True
+        return node
+
+    dirs = []
+    files = []
+
+    for e in entries:
+
+        try:
+            if e.is_dir(follow_symlinks=False):
+                dirs.append(e)
+            else:
+                files.append(e)
+        except:
+            pass
+
+    dirs.sort(key=lambda x: natural_key(x.name))
+    files.sort(key=lambda x: natural_key(x.name))
+
+    for d in dirs:
+
+        child = scan_folder(d.path)
+
+        node["children"].append(child)
+
+        total_files += child.get("files",0)
+        total_folders += child.get("folders",0) + 1
+        total_size += child.get("size",0)
+
+    for f in files:
+
+        try:
+
+            stat = f.stat()
+
+            node["children"].append({
+                "type":"file",
+                "name":f.name,
+                "size":stat.st_size,
+                "modified":int(stat.st_mtime)
+            })
+
+            total_files += 1
+            total_size += stat.st_size
+
+        except:
+            pass
+
+    node["files"] = total_files
+    node["folders"] = total_folders
+    node["size"] = total_size
+
+    return node
+
+
+if __name__ == "__main__":
+
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print('python tree_to_json.py "folder"')
+        sys.exit()
+
+    root = sys.argv[1]
+
+    print("Scanning...")
+    root_node = scan_folder(root)
+
+    with open(
+        "tree_data.json",
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            root_node,
+            f,
+            ensure_ascii=False
+        )
+
+    print("Done.")
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Explorer Tree</title>
+
+<style>
+
+body{
+    font-family:"Segoe UI",sans-serif;
+    margin:20px;
+    background:#fff;
+    font-size:13px;
+}
+
+#toolbar{
+    margin-bottom:10px;
+}
+
+#search{
+    width:500px;
+    padding:6px;
+}
+
+button{
+    margin-left:5px;
+}
+
+.summary{
+    background:#f5f9ff;
+    border:1px solid #ccd;
+    padding:10px;
+    margin-bottom:10px;
+}
+
+.header{
+    display:flex;
+    border-bottom:1px solid #ccc;
+    padding-bottom:4px;
+    margin-bottom:5px;
+    font-weight:600;
+}
+
+.header-name{
+    flex:1;
+}
+
+.header-size{
+    width:120px;
+    text-align:right;
+    padding-right:20px;
+}
+
+.header-date{
+    width:180px;
+}
+
+.row{
+    display:flex;
+    align-items:center;
+    min-height:24px;
+    white-space:nowrap;
+}
+
+.row:hover{
+    background:#eaf3ff;
+}
+
+.name{
+    flex:1;
+    overflow:hidden;
+    text-overflow:ellipsis;
+}
+
+.size{
+    width:120px;
+    text-align:right;
+    padding-right:20px;
+    color:#555;
+}
+
+.date{
+    width:180px;
+    color:#555;
+}
+
+.folder{
+    cursor:pointer;
+}
+
+.children{
+    margin-left:22px;
+}
+
+.hidden{
+    display:none;
+}
+
+.stat{
+    color:#888;
+    font-size:11px;
+    margin-left:8px;
+}
+
+.match{
+    background:#fff8b0;
+}
+
+</style>
+</head>
+<body>
+
+<h2>Explorer Tree</h2>
+
+<div id="summary" class="summary">
+Loading...
+</div>
+
+<div id="toolbar">
+
+<input
+id="search"
+placeholder="Search file or folder..."
+>
+
+<button onclick="expandAll()">
+Expand All
+</button>
+
+<button onclick="collapseAll()">
+Collapse All
+</button>
+
+</div>
+
+<div class="header">
+
+<div class="header-name">
+Name
+</div>
+
+<div class="header-size">
+Size
+</div>
+
+<div class="header-date">
+Date Modified
+</div>
+
+</div>
+
+<div id="tree"></div>
+
+<script>
+
+let treeData = null;
+
+function escapeHtml(text)
+{
+    return text
+        .replace(/&/g,"&amp;")
+        .replace(/</g,"&lt;")
+        .replace(/>/g,"&gt;")
+        .replace(/"/g,"&quot;");
+}
+
+function formatSize(bytes)
+{
+    let units =
+        ["B","KB","MB","GB","TB"];
+
+    let i = 0;
+
+    while(bytes >= 1024 &&
+          i < units.length - 1)
+    {
+        bytes /= 1024;
+        i++;
+    }
+
+    return bytes.toFixed(1)
+         + " "
+         + units[i];
+}
+
+function formatDate(epoch)
+{
+    if(!epoch)
+        return "";
+
+    let d =
+        new Date(epoch * 1000);
+
+    return d.getFullYear()
+        + "-"
+        + String(
+            d.getMonth()+1
+          ).padStart(2,"0")
+        + "-"
+        + String(
+            d.getDate()
+          ).padStart(2,"0")
+        + " "
+        + String(
+            d.getHours()
+          ).padStart(2,"0")
+        + ":"
+        + String(
+            d.getMinutes()
+          ).padStart(2,"0");
+}
+
+function createFile(node)
+{
+    let div =
+        document.createElement("div");
+
+    div.className =
+        "row";
+
+    div.innerHTML =
+
+    "<div class='name'>📄 "
+    + escapeHtml(node.name)
+    + "</div>"
+
+    + "<div class='size'>"
+    + formatSize(node.size || 0)
+    + "</div>"
+
+    + "<div class='date'>"
+    + formatDate(node.modified)
+    + "</div>";
+
+    return div;
+}
+
+function createFolder(node)
+{
+    let wrapper =
+        document.createElement("div");
+
+    let folder =
+        document.createElement("div");
+
+    folder.className =
+        "row folder";
+
+    folder.innerHTML =
+
+    "<div class='name'>"
+
+    + "▶ 📁 "
+
+    + escapeHtml(node.name)
+
+    + "<span class='stat'>"
+
+    + " ["
+
+    + (node.folders || 0)
+        .toLocaleString()
+
+    + " folders / "
+
+    + (node.files || 0)
+        .toLocaleString()
+
+    + " files]"
+
+    + "</span>"
+
+    + "</div>"
+
+    + "<div class='size'>"
+
+    + formatSize(node.size || 0)
+
+    + "</div>"
+
+    + "<div class='date'></div>";
+
+    wrapper.appendChild(folder);
+
+    let children =
+        document.createElement("div");
+
+    children.className =
+        "children hidden";
+
+    wrapper.appendChild(children);
+
+    let loaded = false;
+
+    folder.onclick = function()
+    {
+        if(children.classList.contains(
+           "hidden"))
+        {
+            children.classList.remove(
+                "hidden"
+            );
+
+            folder.querySelector(
+                ".name"
+            ).innerHTML =
+            folder.querySelector(
+                ".name"
+            ).innerHTML.replace(
+                "▶",
+                "▼"
+            );
+
+            if(!loaded)
+            {
+                loaded = true;
+
+                for(let child of node.children)
+                {
+                    if(child.type==="file")
+                    {
+                        children.appendChild(
+                            createFile(child)
+                        );
+                    }
+                    else
+                    {
+                        children.appendChild(
+                            createFolder(child)
+                        );
+                    }
+                }
+            }
+        }
+        else
+        {
+            children.classList.add(
+                "hidden"
+            );
+
+            folder.querySelector(
+                ".name"
+            ).innerHTML =
+            folder.querySelector(
+                ".name"
+            ).innerHTML.replace(
+                "▼",
+                "▶"
+            );
+        }
+    };
+
+    return wrapper;
+}
+
+function expandAll()
+{
+    document
+      .querySelectorAll(".folder")
+      .forEach(f =>
+      {
+          let child =
+              f.nextElementSibling;
+
+          if(child &&
+             child.classList.contains(
+                "hidden"))
+          {
+              f.click();
+          }
+      });
+}
+
+function collapseAll()
+{
+    document
+      .querySelectorAll(".folder")
+      .forEach(f =>
+      {
+          let child =
+              f.nextElementSibling;
+
+          if(child &&
+            !child.classList.contains(
+                "hidden"))
+          {
+              f.click();
+          }
+      });
+}
+
+function searchNode(node,q,result)
+{
+    if(
+      node.name
+          .toLowerCase()
+          .includes(q)
+      )
+    {
+        result.push(node);
+    }
+
+    if(node.children)
+    {
+        for(let c of node.children)
+        {
+            searchNode(
+                c,
+                q,
+                result
+            );
+        }
+    }
+}
+
+let timer;
+
+document
+.getElementById("search")
+.addEventListener("input", function()
+{
+    clearTimeout(timer);
+
+    timer = setTimeout(
+    () =>
+    {
+        let q =
+            this.value
+                .trim()
+                .toLowerCase();
+
+        let tree =
+            document
+                .getElementById(
+                    "tree"
+                );
+
+        if(q==="")
+        {
+            tree.innerHTML="";
+
+            tree.appendChild(
+                createFolder(
+                    treeData
+                )
+            );
+
+            return;
+        }
+
+        let result=[];
+
+        searchNode(
+            treeData,
+            q,
+            result
+        );
+
+        tree.innerHTML="";
+
+        result
+        .slice(0,2000)
+        .forEach(item =>
+        {
+            let row =
+              document.createElement(
+                "div"
+              );
+
+            row.className =
+                "row match";
+
+            row.innerHTML =
+
+             "<div class='name'>"
+
+             + escapeHtml(item.name)
+
+             + "</div>"
+
+             + "<div class='size'>"
+
+             + (
+                 item.size
+                 ? formatSize(item.size)
+                 : ""
+               )
+
+             + "</div>"
+
+             + "<div class='date'>"
+
+             + (
+                 item.modified
+                 ? formatDate(
+                     item.modified
+                   )
+                 : ""
+               )
+
+             + "</div>";
+
+            tree.appendChild(row);
+        });
+
+    },300);
+
+});
+
+fetch("tree_data.json")
+.then(r=>r.json())
+.then(data =>
+{
+    treeData = data;
+
+    document
+      .getElementById(
+          "summary"
+      )
+      .innerHTML =
+
+      "<b>Total Folders:</b> "
+      + data.folders.toLocaleString()
+
+      + "<br><b>Total Files:</b> "
+      + data.files.toLocaleString()
+
+      + "<br><b>Total Size:</b> "
+      + formatSize(data.size);
+
+    document
+      .getElementById("tree")
+      .appendChild(
+          createFolder(data)
+      );
+});
+
+</script>
+
+</body>
+</html>
+    print("Output: tree_data.json")
